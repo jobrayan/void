@@ -17,19 +17,16 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     env:
-      # semantic-release needs this to create the GitHub Release
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Disable any accidental code-signing discovery in CI
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      # VS Code/Chromium downloads not needed on CI
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      # Make gulp a touch quieter
       CI: "true"
 
     steps:
-      # --- Git & Node toolchain ---
+      # ── Git & Node ──────────────────────────────────────────────────────────────
       - name: Checkout (full history for tags)
         uses: actions/checkout@v4
         with:
@@ -41,7 +38,7 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # --- System packages for native node modules & Electron runtime ---
+      # ── System toolchain & headers for native modules/Electron ──────────────────
       - name: Install system libraries for native modules
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -62,26 +59,44 @@ jobs:
             libgtk-3-0 \
             libatk-bridge2.0-0 \
             libgbm-dev
+          # NOTE: libasound2 is libasound2t64 on Ubuntu 24.04; Electron doesn't need it for packaging,
+          # so we omit it entirely to avoid "Unable to locate package" errors.
 
-      # --- JS deps ---
+      # ── JS deps ────────────────────────────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
 
       - name: Verify gulp is available
         run: npx --yes gulp --version
 
-      # --- Build the React UI that your TS imports expect ---
-      # This generates ./src/vs/workbench/contrib/void/browser/react/out/**
+      # ── Build React UI bundles required by TS imports (react/out/**) ───────────
       - name: Build React (void UI)
         run: npm run buildreact
 
-      # --- Build (VS Code-style) ---
+      # ── Compile & package ──────────────────────────────────────────────────────
       - name: Compile sources (gulp compile)
         run: npx --yes gulp compile
 
-      # Use the CI packager variant to avoid bundling local non-native extensions
-      # which is where your previous run threw "Invalid glob argument"
+      # Hotfix: preload a tiny shim so gulp tolerates blank globs from extension packaging
+      - name: Create CI vinyl-fs patch
+        run: |
+          mkdir -p build
+          cat > build/ci-vfs-patch.js <<'JS'
+          const vfs = require('vinyl-fs'); const realSrc = vfs.src;
+          const { Readable } = require('stream');
+          function empty() { return Readable.from([]); }
+          function clean(g) {
+            if (Array.isArray(g)) { const a=g.filter(s=>typeof s==='string'&&s.trim()); return a.length?a:null; }
+            if (typeof g==='string') return g.trim()?g:null;
+            return null;
+          }
+          vfs.src = function(globs, opts) { const safe = clean(globs); return safe?realSrc.call(this, safe, opts):empty(); };
+          JS
+
+      # Use the CI/minimal packager. Preload the glob guard via NODE_OPTIONS.
       - name: Package Linux x64 (CI variant)
+        env:
+          NODE_OPTIONS: "--require ./build/ci-vfs-patch.js"
         run: npx --yes gulp vscode-linux-x64-min-ci
 
       # Helpful when debugging CI
@@ -91,27 +106,23 @@ jobs:
           (ls -alh .build || true)
           (find .build -maxdepth 4 -type f | sort || true)
 
-      # --- Gather release files for semantic-release assets ---
+      # ── Gather release files for semantic-release assets ───────────────────────
       - name: Prepare release assets
         run: |
           set -euxo pipefail
           mkdir -p release
-
-          # Common places gulp writes archives in OSS forks
           shopt -s globstar nullglob
           for pattern in \
             ".build/**/*linux-x64*.zip" \
             ".build/**/*linux-x64*.tar.gz" \
             ".build/**/linux-x64/**/archive/*.zip" \
-            ".build/**/linux-x64/**/archive/*.tar.gz" \
-            ".build/**/*void*linux*x64*.{zip,tar.gz}"; do
+            ".build/**/linux-x64/**/archive/*.tar.gz"; do
             for f in $pattern; do
               echo "Collecting $f"
               cp -v "$f" release/ || true
             done
           done
-
-          # Fallback: tar any linux-x64 folder if no archive exists
+          # Fallback: tar a linux-x64 folder if no archive exists
           if [ -z "$(ls -A release 2>/dev/null)" ]; then
             LINUX_DIR="$(find .build -type d -name '*linux-x64*' | head -n1 || true)"
             if [ -n "$LINUX_DIR" ]; then
@@ -119,15 +130,20 @@ jobs:
               tar -czf "release/$ARCHIVE" -C "$LINUX_DIR/.." "$(basename "$LINUX_DIR")"
             fi
           fi
+          echo "Release assets:"; ls -alh release || true
 
-          echo "Release assets:"
-          ls -alh release || true
+      - name: Upload build artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-release
+          path: release/*
 
-      # --- Publish GitHub Release via semantic-release ---
+      # ── Publish GitHub Release via semantic-release ────────────────────────────
       - name: Semantic Release
         env:
-          GIT_AUTHOR_NAME: "void-ci"
-          GIT_AUTHOR_EMAIL: "ci@void.dev"
-          GIT_COMMITTER_NAME: "void-ci"
-          GIT_COMMITTER_EMAIL: "ci@void.dev"
+          GIT_AUTHOR_NAME: "Nathan Jobrayan"
+          GIT_AUTHOR_EMAIL: "nathanjobrayan@gmail.com"
+          GIT_COMMITTER_NAME: "Nathan Jobrayan"
+          GIT_COMMITTER_EMAIL: "nathanjobrayan@gmail.com"
         run: npm run release
