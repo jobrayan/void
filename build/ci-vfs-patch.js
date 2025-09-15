@@ -1,8 +1,7 @@
 /**
  * CI shim for gulp/vinyl-fs to tolerate empty/invalid globs.
- * Preload with: NODE_OPTIONS="--require ./build/ci-vfs-patch.js"
+ * Preload with: NODE_OPTIONS="--require ./build/ci-vfs-patch.cjs"
  */
-
 'use strict';
 
 /** @returns {import('stream').Readable} */
@@ -12,10 +11,7 @@ function emptyStream() {
 }
 
 /**
- * Sanitize a vinyl-fs glob argument.
- * - strings: trim; drop if empty
- * - arrays: keep only non-empty strings; drop if none left
- * - others: drop
+ * Sanitize vinyl-fs glob argument.
  * @param {any} globs
  * @returns {string|string[]|null}
  */
@@ -32,9 +28,8 @@ function sanitize(globs) {
 }
 
 /**
- * Patch a given src function (vinyl-fs/src export shape).
+ * Patch a src function (vinyl-fs/lib/src).
  * @param {(globs:any, options?:any)=>any} realSrc
- * @returns {(globs:any, options?:any)=>any}
  */
 function makePatchedSrc(realSrc) {
 	return function patchedSrc(globs, options) {
@@ -53,7 +48,7 @@ try {
 } catch { /* ignore */ }
 
 try {
-	// Patch direct import path used by gulp: vinyl-fs/lib/src/index.js
+	// Patch direct import path used by gulp
 	const srcPath = require.resolve('vinyl-fs/lib/src/index.js');
 	const realSrc = require(srcPath);
 	if (typeof realSrc === 'function' && require.cache[srcPath]) {
