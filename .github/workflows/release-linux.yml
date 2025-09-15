@@ -2,7 +2,7 @@ name: Release (Linux x64)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 concurrency:
@@ -20,17 +20,28 @@ jobs:
     timeout-minutes: 90
 
     env:
+      # Needed by semantic-release to publish a GitHub Release
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Disable accidental code signing detection
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # Skip Playwright browser downloads
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      # Ensure CI mode in many tools
       CI: "true"
+
+      # Speed up Electron downloads
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      # Make node-gyp fetch Electron HEADERS from the mirror (fixes the artifacts.electronjs.org timeout)
+      npm_config_disturl: https://npmmirror.com/mirrors/electron/
+
+      # Harden npm networking
       npm_config_fetch_retries: "5"
       npm_config_fetch_retry_factor: "2"
-      npm_config_fetch_retry_maxtimeout: "300000"
-      npm_config_network_timeout: "600000"
+      npm_config_fetch_retry_maxtimeout: "300000"  # 5m
+      npm_config_network_timeout: "600000"         # 10m
 
     steps:
+      # ── Git & Node toolchain ───────────────────────────────────────────────────
       - name: Checkout (full history for tags)
         uses: actions/checkout@v4
         with:
@@ -41,7 +52,12 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+          cache-dependency-path: package-lock.json
 
+      - name: Setup Electron cache env
+        run: echo "ELECTRON_CACHE=$RUNNER_TEMP/electron-cache" >> $GITHUB_ENV
+
+      # ── System toolchain & headers for native modules/Electron ─────────────────
       - name: Install system libraries for native modules
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -62,20 +78,25 @@ jobs:
             libgtk-3-0 \
             libatk-bridge2.0-0 \
             libgbm-dev
+          # NOTE: intentionally NOT installing libasound2 (not available on this image)
 
+      # ── JS deps ────────────────────────────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
 
       - name: Verify gulp is available
         run: npx --yes gulp --version
 
+      # ── Build React bundles required by TS imports (react/out/**) ─────────────
       - name: Build React (void UI)
         run: npm run buildreact
 
+      # ── Compile dev sources (not minified) ─────────────────────────────────────
       - name: Compile sources (gulp compile)
         run: npx --yes gulp compile
 
-      - name: Create CI vinyl-fs patch
+      # ── Create a CI guard for empty/invalid vinyl-fs globs ────────────────────
+      - name: Create CI vinyl-fs patch (CommonJS)
         run: |
           mkdir -p build
           cat > build/ci-vfs-patch.cjs <<'JS'
@@ -100,17 +121,38 @@ jobs:
           } catch {}
           JS
 
+      # ── Build outputs used by minified packagers (produces out-vscode* trees) ─
+      - name: Compile build (electron/browser)
+        run: npx --yes gulp compile-build
+
+      - name: Compile extensions (build)
+        run: npx --yes gulp compile-extensions-build
+
+      - name: Minify VS Code (produces out-vscode-min)
+        run: npx --yes gulp minify-vscode
+
+      - name: Minify VS Code REH/Web (optional but recommended)
+        run: |
+          npx --yes gulp minify-vscode-reh
+          npx --yes gulp minify-vscode-reh-web
+
+      - name: Assert out-vscode-min exists
+        run: test -f out-vscode-min/vs/base/parts/sandbox/electron-sandbox/preload.js
+
+      # ── Package (minified CI variant) ──────────────────────────────────────────
       - name: Package Linux x64 (CI variant)
         env:
           NODE_OPTIONS: "--require ./build/ci-vfs-patch.cjs"
         run: npx --yes gulp vscode-linux-x64-min-ci
 
+      # ── Debug listing ─────────────────────────────────────────────────────────
       - name: List built artifacts (debug)
         run: |
           echo "Tree under .build/"
           (ls -alh .build || true)
           (find .build -maxdepth 4 -type f | sort || true)
 
+      # ── Collect release assets ────────────────────────────────────────────────
       - name: Prepare release assets
         run: |
           set -euxo pipefail
@@ -143,6 +185,7 @@ jobs:
           path: release/*
           if-no-files-found: ignore
 
+      # ── Publish GitHub Release via semantic-release ───────────────────────────
       - name: Semantic Release
         env:
           GIT_AUTHOR_NAME: "Nathan Jobrayan"
