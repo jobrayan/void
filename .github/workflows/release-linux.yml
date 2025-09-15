@@ -46,7 +46,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential python3 pkg-config libkrb5-dev libsecret-1-dev libxkbfile-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libnss3 libasound2 libgtk-3-0 libatk-bridge2.0-0 libgbm-dev
+          sudo apt-get install -y --no-install-recommends build-essential python3 pkg-config libkrb5-dev libsecret-1-dev libxkbfile-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libnss3 libgtk-3-0 libatk-bridge2.0-0 libgbm-dev
 
       # --- JS deps ---
       - name: Install dependencies
