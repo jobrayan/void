@@ -1,22 +1,22 @@
 /**
- * Preloaded (via NODE_OPTIONS=--require) shim for vinyl-fs/src used by gulp.
- * Filters out falsy/blank glob entries so gulp.src('') never throws
- * "Invalid glob argument:" during VS Code packaging of local extensions.
+ * CI shim for gulp/vinyl-fs to tolerate empty/invalid globs.
+ * Preload with: NODE_OPTIONS="--require ./build/ci-vfs-patch.js"
  */
-const vfs = require('vinyl-fs');
-const realSrc = vfs.src;
 
-/**
- * Return an empty readable stream (gulp-compatible) when there is nothing to process.
- */
+'use strict';
+
+/** @returns {import('stream').Readable} */
 function emptyStream() {
 	const { Readable } = require('stream');
 	return Readable.from([]);
 }
 
 /**
- * Sanitize a glob or array of globs: drop non-strings and blank strings.
- * @param {string|string[]} globs
+ * Sanitize a vinyl-fs glob argument.
+ * - strings: trim; drop if empty
+ * - arrays: keep only non-empty strings; drop if none left
+ * - others: drop
+ * @param {any} globs
  * @returns {string|string[]|null}
  */
 function sanitize(globs) {
@@ -25,14 +25,38 @@ function sanitize(globs) {
 		return cleaned.length ? cleaned : null;
 	}
 	if (typeof globs === 'string') {
-		return globs.trim().length ? globs : null;
+		const s = globs.trim();
+		return s.length ? s : null;
 	}
 	return null;
 }
 
-// Monkey-patch vinyl-fs.src to be tolerant of empty globs.
-vfs.src = function patchedSrc(globs, options) {
-	const safe = sanitize(globs);
-	if (!safe) return emptyStream();
-	return realSrc.call(this, safe, options);
-};
+/**
+ * Patch a given src function (vinyl-fs/src export shape).
+ * @param {(globs:any, options?:any)=>any} realSrc
+ * @returns {(globs:any, options?:any)=>any}
+ */
+function makePatchedSrc(realSrc) {
+	return function patchedSrc(globs, options) {
+		const safe = sanitize(globs);
+		if (!safe) return emptyStream();
+		return realSrc.call(this, safe, options);
+	};
+}
+
+try {
+	// Patch top-level vinyl-fs.src
+	const vfs = require('vinyl-fs');
+	if (vfs && typeof vfs.src === 'function') {
+		vfs.src = makePatchedSrc(vfs.src);
+	}
+} catch { /* ignore */ }
+
+try {
+	// Patch direct import path used by gulp: vinyl-fs/lib/src/index.js
+	const srcPath = require.resolve('vinyl-fs/lib/src/index.js');
+	const realSrc = require(srcPath);
+	if (typeof realSrc === 'function' && require.cache[srcPath]) {
+		require.cache[srcPath].exports = makePatchedSrc(realSrc);
+	}
+} catch { /* ignore */ }

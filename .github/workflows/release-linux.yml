@@ -24,9 +24,13 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       CI: "true"
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      npm_config_fetch_retries: "5"
+      npm_config_fetch_retry_factor: "2"
+      npm_config_fetch_retry_maxtimeout: "300000"
+      npm_config_network_timeout: "600000"
 
     steps:
-      # ── Git & Node ──────────────────────────────────────────────────────────────
       - name: Checkout (full history for tags)
         uses: actions/checkout@v4
         with:
@@ -38,7 +42,6 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # ── System toolchain & headers for native modules/Electron ──────────────────
       - name: Install system libraries for native modules
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -59,54 +62,55 @@ jobs:
             libgtk-3-0 \
             libatk-bridge2.0-0 \
             libgbm-dev
-          # NOTE: libasound2 is libasound2t64 on Ubuntu 24.04; Electron doesn't need it for packaging,
-          # so we omit it entirely to avoid "Unable to locate package" errors.
 
-      # ── JS deps ────────────────────────────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
 
       - name: Verify gulp is available
         run: npx --yes gulp --version
 
-      # ── Build React UI bundles required by TS imports (react/out/**) ───────────
       - name: Build React (void UI)
         run: npm run buildreact
 
-      # ── Compile & package ──────────────────────────────────────────────────────
       - name: Compile sources (gulp compile)
         run: npx --yes gulp compile
 
-      # Hotfix: preload a tiny shim so gulp tolerates blank globs from extension packaging
       - name: Create CI vinyl-fs patch
         run: |
           mkdir -p build
-          cat > build/ci-vfs-patch.js <<'JS'
+          cat > build/ci-vfs-patch.cjs <<'JS'
           const vfs = require('vinyl-fs'); const realSrc = vfs.src;
           const { Readable } = require('stream');
-          function empty() { return Readable.from([]); }
-          function clean(g) {
-            if (Array.isArray(g)) { const a=g.filter(s=>typeof s==='string'&&s.trim()); return a.length?a:null; }
-            if (typeof g==='string') return g.trim()?g:null;
+          function empty(){ return Readable.from([]); }
+          function clean(g){
+            if(Array.isArray(g)){ const a=g.filter(s=>typeof s==='string'&&s.trim()); return a.length?a:null; }
+            if(typeof g==='string') return g.trim()?g:null;
             return null;
           }
-          vfs.src = function(globs, opts) { const safe = clean(globs); return safe?realSrc.call(this, safe, opts):empty(); };
+          vfs.src = function(globs, opts){ const safe=clean(globs); return safe?realSrc.call(this,safe,opts):empty(); };
+
+          try {
+            const srcPath = require.resolve('vinyl-fs/lib/src/index.js');
+            const real = require(srcPath);
+            if (typeof real === 'function' && require.cache[srcPath]) {
+              require.cache[srcPath].exports = function(globs, opts){
+                const safe = clean(globs); return safe?real.call(this,safe,opts):empty();
+              };
+            }
+          } catch {}
           JS
 
-      # Use the CI/minimal packager. Preload the glob guard via NODE_OPTIONS.
       - name: Package Linux x64 (CI variant)
         env:
-          NODE_OPTIONS: "--require ./build/ci-vfs-patch.js"
+          NODE_OPTIONS: "--require ./build/ci-vfs-patch.cjs"
         run: npx --yes gulp vscode-linux-x64-min-ci
 
-      # Helpful when debugging CI
       - name: List built artifacts (debug)
         run: |
           echo "Tree under .build/"
           (ls -alh .build || true)
           (find .build -maxdepth 4 -type f | sort || true)
 
-      # ── Gather release files for semantic-release assets ───────────────────────
       - name: Prepare release assets
         run: |
           set -euxo pipefail
@@ -122,7 +126,6 @@ jobs:
               cp -v "$f" release/ || true
             done
           done
-          # Fallback: tar a linux-x64 folder if no archive exists
           if [ -z "$(ls -A release 2>/dev/null)" ]; then
             LINUX_DIR="$(find .build -type d -name '*linux-x64*' | head -n1 || true)"
             if [ -n "$LINUX_DIR" ]; then
@@ -138,8 +141,8 @@ jobs:
         with:
           name: linux-x64-release
           path: release/*
+          if-no-files-found: ignore
 
-      # ── Publish GitHub Release via semantic-release ────────────────────────────
       - name: Semantic Release
         env:
           GIT_AUTHOR_NAME: "Nathan Jobrayan"
