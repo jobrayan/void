@@ -1,17 +1,8 @@
-# Workflow: Release (Linux x64)
-# Goal: Build Void (VS Code fork) for Linux x64 and publish a GitHub Release via semantic-release.
-# Key steps:
-#  - Install native toolchain & headers needed by kerberos/x11/native modules
-#  - npm ci
-#  - Build Void React UI (generates ./react/out/** bundles)
-#  - gulp compile && gulp vscode-linux-x64
-#  - Collect artifacts under ./release and run semantic-release
-
 name: Release (Linux x64)
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   workflow_dispatch:
 
 concurrency:
@@ -19,27 +10,26 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write    # semantic-release needs this
+  contents: write
   issues: read
   pull-requests: read
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
 
     env:
-      # Used by semantic-release to publish
+      # semantic-release needs this to create the GitHub Release
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Avoid accidental code signing on CI
+      # Disable any accidental code-signing discovery in CI
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      # Save CI time
+      # VS Code/Chromium downloads not needed on CI
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      # Give Node more headroom during compile
-      NODE_OPTIONS: "--max_old_space_size=8192"
+      # Make gulp a touch quieter
+      CI: "true"
 
     steps:
-      # ── Git & Node ──────────────────────────────────────────────────────────────
+      # --- Git & Node toolchain ---
       - name: Checkout (full history for tags)
         uses: actions/checkout@v4
         with:
@@ -51,60 +41,77 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # ── Native toolchain & headers for node-gyp modules and Electron runtime ───
+      # --- System packages for native node modules & Electron runtime ---
       - name: Install system libraries for native modules
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential python3 pkg-config \
-            libkrb5-dev libsecret-1-dev \
-            libxkbfile-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev \
-            libnss3 libgtk-3-0 libatk-bridge2.0-0 libgbm-dev
+            build-essential \
+            python3 \
+            pkg-config \
+            libkrb5-dev \
+            libsecret-1-dev \
+            libxkbfile-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-dev \
+            libnss3 \
+            libgtk-3-0 \
+            libatk-bridge2.0-0 \
+            libgbm-dev
 
-      # ── JS deps ────────────────────────────────────────────────────────────────
+      # --- JS deps ---
       - name: Install dependencies
         run: npm ci
 
       - name: Verify gulp is available
         run: npx --yes gulp --version
 
-      # ── Build React UI bundles required by TS imports (react/out/**) ───────────
-      - name: Build Void React UI
-        run: |
-          set -euo pipefail
-          npm run buildreact
-          # Sanity check: verify at least one built entry exists
-          test -e ./src/vs/workbench/contrib/void/browser/react/out/void-tooltip/index.js
+      # --- Build the React UI that your TS imports expect ---
+      # This generates ./src/vs/workbench/contrib/void/browser/react/out/**
+      - name: Build React (void UI)
+        run: npm run buildreact
 
-      # ── Compile & package ──────────────────────────────────────────────────────
-      - name: Compile sources
+      # --- Build (VS Code-style) ---
+      - name: Compile sources (gulp compile)
         run: npx --yes gulp compile
 
-      - name: Build VS Code-style Linux x64 bundle
-        run: npx --yes gulp vscode-linux-x64
+      # Use the CI packager variant to avoid bundling local non-native extensions
+      # which is where your previous run threw "Invalid glob argument"
+      - name: Package Linux x64 (CI variant)
+        run: npx --yes gulp vscode-linux-x64-min-ci
 
+      # Helpful when debugging CI
       - name: List built artifacts (debug)
         run: |
           echo "Tree under .build/"
           (ls -alh .build || true)
-          (find .build -maxdepth 3 -type f | sort || true)
+          (find .build -maxdepth 4 -type f | sort || true)
 
-      # ── Prepare files for the GitHub Release (semantic-release github assets) ─
+      # --- Gather release files for semantic-release assets ---
       - name: Prepare release assets
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p release
-          # Prefer archives produced by gulp, if present
-          if compgen -G ".build/**/*linux-x64*.zip" > /dev/null; then
-            cp -v $(ls .build/**/*linux-x64*.zip) release/ || true
-          fi
-          if compgen -G ".build/**/*linux-x64*.tar.gz" > /dev/null; then
-            cp -v $(ls .build/**/*linux-x64*.tar.gz) release/ || true
-          fi
-          # Fallback: tar the linux-x64 folder
+
+          # Common places gulp writes archives in OSS forks
+          shopt -s globstar nullglob
+          for pattern in \
+            ".build/**/*linux-x64*.zip" \
+            ".build/**/*linux-x64*.tar.gz" \
+            ".build/**/linux-x64/**/archive/*.zip" \
+            ".build/**/linux-x64/**/archive/*.tar.gz" \
+            ".build/**/*void*linux*x64*.{zip,tar.gz}"; do
+            for f in $pattern; do
+              echo "Collecting $f"
+              cp -v "$f" release/ || true
+            done
+          done
+
+          # Fallback: tar any linux-x64 folder if no archive exists
           if [ -z "$(ls -A release 2>/dev/null)" ]; then
             LINUX_DIR="$(find .build -type d -name '*linux-x64*' | head -n1 || true)"
             if [ -n "$LINUX_DIR" ]; then
@@ -112,21 +119,15 @@ jobs:
               tar -czf "release/$ARCHIVE" -C "$LINUX_DIR/.." "$(basename "$LINUX_DIR")"
             fi
           fi
-          echo "Release assets:"; ls -alh release || true
 
-      # Optional: keep a copy of artifacts for debugging CI runs
-      - name: Upload build artifacts (debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64-release
-          path: release/*
+          echo "Release assets:"
+          ls -alh release || true
 
-      # ── Publish GitHub Release via semantic-release ────────────────────────────
-      - name: Semantic Release (GitHub)
+      # --- Publish GitHub Release via semantic-release ---
+      - name: Semantic Release
         env:
-          GIT_AUTHOR_NAME: "Nathan Jobrayan"
-          GIT_AUTHOR_EMAIL: "nathanjobrayan@gmail.com"
-          GIT_COMMITTER_NAME: "Nathan Jobrayan"
-          GIT_COMMITTER_EMAIL: "nathanjobrayan@gmail.com"
+          GIT_AUTHOR_NAME: "void-ci"
+          GIT_AUTHOR_EMAIL: "ci@void.dev"
+          GIT_COMMITTER_NAME: "void-ci"
+          GIT_COMMITTER_EMAIL: "ci@void.dev"
         run: npm run release
