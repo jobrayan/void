@@ -10,7 +10,7 @@ import { convertToVscodeLang, detectLanguage } from '../../../../common/helpers/
 import { BlockCodeApplyWrapper } from './ApplyBlockHoverButtons.js'
 import { useAccessor } from '../util/services.js'
 import { URI } from '../../../../../../../base/common/uri.js'
-import { isAbsolute } from '../../../../../../../base/common/path.js'
+import { isAbsolute, join } from '../../../../../../../base/common/path.js'
 import { separateOutFirstLine } from '../../../../common/helpers/util.js'
 import { BlockCode } from '../util/inputs.js'
 import { CodespanLocationLink } from '../../../../common/chatThreadServiceTypes.js'
@@ -281,25 +281,39 @@ const RenderToken = ({ token, inPTag, codeURI, chatMessageLocation, tokenIdx, ..
 		return <span>{t.raw}</span>
 	}
 
-	if (t.type === 'code') {
-		const [firstLine, remainingContents] = separateOutFirstLine(t.text)
-		const firstLineIsURI = isValidUri(firstLine) && !codeURI
-		const contents = firstLineIsURI ? (remainingContents?.trimStart() || '') : t.text // exclude first-line URI from contents
+        if (t.type === 'code') {
+                const [firstLine, remainingContents] = separateOutFirstLine(t.text)
 
-		if (!contents) return null
+                let firstLineUri: URI | null = null
+                if (!codeURI) {
+                        if (isValidUri(firstLine)) {
+                                firstLineUri = URI.file(firstLine)
+                        }
+                        else if ((firstLine.includes('/') || firstLine.includes('\\')) && !firstLine.includes('//')) {
+                                const workspaceContextService = accessor.get('IWorkspaceContextService')
+                                const folders = workspaceContextService.getWorkspace().folders
+                                if (folders.length) {
+                                        firstLineUri = URI.file(join(folders[0].uri.fsPath, firstLine))
+                                }
+                        }
+                }
 
-		// figure out langauge and URI
-		let uri: URI | null
-		let language: string
-		if (codeURI) {
-			uri = codeURI
-		}
-		else if (firstLineIsURI) { // get lang from the uri in the first line of the markdown
-			uri = URI.file(firstLine)
-		}
-		else {
-			uri = null
-		}
+                const contents = firstLineUri ? (remainingContents?.trimStart() || '') : t.text // exclude first-line URI from contents
+
+                if (!contents) return null
+
+                // figure out langauge and URI
+                let uri: URI | null
+                let language: string
+                if (codeURI) {
+                        uri = codeURI
+                }
+                else if (firstLineUri) { // get lang from the uri in the first line of the markdown
+                        uri = firstLineUri
+                }
+                else {
+                        uri = null
+                }
 
 		if (t.lang) { // a language was provided. empty string is common so check truthy, not just undefined
 			language = convertToVscodeLang(languageService, t.lang) // convert markdown language to language that vscode recognizes (eg markdown doesn't know bash but it does know shell)
