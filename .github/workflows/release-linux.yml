@@ -1,0 +1,100 @@
+name: Release (Linux x64)
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: release-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: read
+  pull-requests: read
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    env:
+      # semantic-release needs this to create the GitHub Release
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Some forks attempt code signing; disable any auto-discovery on CI
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # VS Code/Chromium downloads not needed on CI
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+    steps:
+      - name: Checkout (full history for tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Install dependencies
+        run: |
+          pnpm i --frozen-lockfile || pnpm i
+
+      - name: Verify gulp is available
+        run: npx --yes gulp --version
+
+      # --- Build (VS Code-style) ---
+      - name: Compile sources
+        run: |
+          # VS Code/void build uses gulp tasks
+          npx --yes gulp compile
+
+      - name: Build VS Code-style Linux x64 bundle
+        run: |
+          # Produces .build/electron/linux-x64/** or similar artifact dir
+          npx --yes gulp vscode-linux-x64
+
+      - name: List built artifacts (debug)
+        run: |
+          echo "Tree under .build/"
+          (ls -alh .build || true)
+          (find .build -maxdepth 3 -type f | sort || true)
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # Grab common output folders/files from VS Code-style builds
+          # Adjust these globs if your fork writes a slightly different path/name.
+          if compgen -G ".build/**/*linux-x64*.zip" > /dev/null; then
+            cp -v $(ls .build/**/*linux-x64*.zip) release/ || true
+          fi
+          if compgen -G ".build/**/*linux-x64*.tar.gz" > /dev/null; then
+            cp -v $(ls .build/**/*linux-x64*.tar.gz) release/ || true
+          fi
+          # Fallback: package the linux-x64 folder if no archive was produced
+          if [ -z "$(ls -A release 2>/dev/null)" ]; then
+            LINUX_DIR="$(find .build -type d -name '*linux-x64*' | head -n1 || true)"
+            if [ -n "$LINUX_DIR" ]; then
+              ARCHIVE="void-linux-x64-$(date +%Y%m%d%H%M).tar.gz"
+              tar -czf "release/$ARCHIVE" -C "$LINUX_DIR/.." "$(basename "$LINUX_DIR")"
+            fi
+          fi
+          echo "Release assets:"
+          ls -alh release || true
+
+      # --- Publish Release via semantic-release ---
+      - name: Semantic Release
+        env:
+          GIT_AUTHOR_NAME: "void-ci"
+          GIT_AUTHOR_EMAIL: "ci@void.dev"
+          GIT_COMMITTER_NAME: "void-ci"
+          GIT_COMMITTER_EMAIL: "ci@void.dev"
+        run: pnpm semantic-release
