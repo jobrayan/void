@@ -1,28 +1,17 @@
 {
 	"branches": ["main"],
-	"tagFormat": "v${version}",
 	"plugins": [
-	  "@semantic-release/commit-analyzer",
-	  "@semantic-release/release-notes-generator",
-	  [
-		"@semantic-release/changelog",
-		{ "changelogFile": "CHANGELOG.md" }
-	  ],
-	  [
-		"@semantic-release/github",
-		{
-		  "assets": [
-			{ "path": "release/*.zip", "label": "Linux x64 (zip)" },
-			{ "path": "release/*.tar.gz", "label": "Linux x64 (tar.gz)" }
-		  ]
-		}
-	  ],
-	  [
-		"@semantic-release/git",
-		{
-		  "assets": ["CHANGELOG.md", "package.json", "pnpm-lock.yaml"],
-		  "message": "chore(release): ${nextRelease.version}\n\n${nextRelease.notes}"
-		}
-	  ]
+	  ["@semantic-release/commit-analyzer", { "preset": "angular" }],
+	  ["@semantic-release/release-notes-generator", { "preset": "angular" }],
+	  ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
+	  ["@semantic-release/github", {
+		"assets": [
+		  { "path": "release/*", "label": "Linux x64 build(s)" }
+		]
+	  }],
+	  ["@semantic-release/git", {
+		"assets": ["CHANGELOG.md"],
+		"message": "chore(release): ${nextRelease.version}\n\n${nextRelease.notes}"
+	  }]
 	]
   }
