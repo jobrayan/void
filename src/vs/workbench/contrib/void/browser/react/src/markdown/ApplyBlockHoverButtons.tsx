@@ -337,10 +337,13 @@ const ApplyButtonsForEdit = ({
 
 	const { currStreamStateRef, setApplying } = useApplyStreamState({ applyBoxId })
 
-	const onClickSubmit = useCallback(async () => {
-		if (currStreamStateRef.current === 'streaming') return
+        const onClickSubmit = useCallback(async () => {
+                if (currStreamStateRef.current === 'streaming') return
+                if (uri !== 'current') {
+                        voidOpenFileFn(uri, accessor)
+                }
 
-		await editCodeService.callBeforeApplyOrEdit(uri)
+                await editCodeService.callBeforeApplyOrEdit(uri)
 
 		const [newApplyingUri, applyDonePromise] = editCodeService.startApplying({
 			from: 'ClickApply',
@@ -363,7 +366,7 @@ const ApplyButtonsForEdit = ({
 		})
 		metricsService.capture('Apply Code', { length: codeStr.length }) // capture the length only
 
-	}, [setApplying, currStreamStateRef, editCodeService, codeStr, uri, applyBoxId, metricsService, notificationService])
+        }, [setApplying, currStreamStateRef, editCodeService, codeStr, uri, applyBoxId, metricsService, notificationService, accessor])
 
 
 	const onClickStop = useCallback(() => {
