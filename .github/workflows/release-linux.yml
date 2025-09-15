@@ -29,10 +29,12 @@ jobs:
       # Ensure CI mode in many tools
       CI: "true"
 
-      # Speed up Electron downloads
+      # Speed up Electron binary downloads (NOT headers)
       ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
-      # Make node-gyp fetch Electron HEADERS from the mirror (fixes the artifacts.electronjs.org timeout)
-      npm_config_disturl: https://npmmirror.com/mirrors/electron/
+      # node-gyp must fetch Electron HEADERS from the canonical host
+      npm_config_disturl: https://artifacts.electronjs.org/headers
+      # be explicit about building native modules against Electron
+      npm_config_runtime: electron
 
       # Harden npm networking
       npm_config_fetch_retries: "5"
@@ -52,10 +54,16 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
+          # keep only if package-lock.json exists in the repo
           cache-dependency-path: package-lock.json
 
       - name: Setup Electron cache env
         run: echo "ELECTRON_CACHE=$RUNNER_TEMP/electron-cache" >> $GITHUB_ENV
+
+      # Optional: auto-sync npm_config_target with package.json devDependencies.electron
+      - name: Read Electron version from package.json
+        id: electron
+        run: echo "target=$(node -p \"require('./package.json').devDependencies.electron\")" >> "$GITHUB_OUTPUT"
 
       # ── System toolchain & headers for native modules/Electron ─────────────────
       - name: Install system libraries for native modules
@@ -81,8 +89,18 @@ jobs:
           # NOTE: intentionally NOT installing libasound2 (not available on this image)
 
       # ── JS deps ────────────────────────────────────────────────────────────────
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies (robust with headers fallback)
+        env:
+          # use dynamic target; if you prefer hardcode, set "34.3.2" here instead
+          npm_config_target: ${{ steps.electron.outputs.target }}
+        run: |
+          set -euxo pipefail
+          # First attempt (using artifacts.electronjs.org/headers)
+          npm ci || {
+            echo "First npm ci failed. Cleaning and retrying with electronjs.org/headers fallback…"
+            rm -rf node_modules
+            npm_config_disturl="https://electronjs.org/headers" npm ci
+          }
 
       - name: Verify gulp is available
         run: npx --yes gulp --version
