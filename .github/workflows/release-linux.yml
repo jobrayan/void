@@ -42,23 +42,11 @@ jobs:
       # --- System packages for native node modules & Electron runtime ---
       # Provides build-essential toolchain + headers for kerberos/gssapi and x11/keymap.
       - name: Install system libraries for native modules
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            python3 \
-            pkg-config \
-            libkrb5-dev \             # kerberos -> gssapi/gssapi.h
-            libsecret-1-dev \          # keytar / libsecret
-            libxkbfile-dev \           # native-keymap
-            libxkbcommon-dev \         # xkbcommon base
-            libxkbcommon-x11-dev \     # xkbcommon x11
-            libx11-dev \               # x11 headers
-            libnss3 \                  # electron runtime deps
-            libasound2 \
-            libgtk-3-0 \
-            libatk-bridge2.0-0 \
-            libgbm-dev
+          sudo apt-get install -y --no-install-recommends build-essential python3 pkg-config libkrb5-dev libsecret-1-dev libxkbfile-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libnss3 libasound2 libgtk-3-0 libatk-bridge2.0-0 libgbm-dev
 
       # --- JS deps ---
       - name: Install dependencies
