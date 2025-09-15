@@ -1,8 +1,17 @@
+# Workflow: Release (Linux x64)
+# Goal: Build Void (VS Code fork) for Linux x64 and publish a GitHub Release via semantic-release.
+# Key steps:
+#  - Install native toolchain & headers needed by kerberos/x11/native modules
+#  - npm ci
+#  - Build Void React UI (generates ./react/out/** bundles)
+#  - gulp compile && gulp vscode-linux-x64
+#  - Collect artifacts under ./release and run semantic-release
+
 name: Release (Linux x64)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 concurrency:
@@ -10,24 +19,27 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: write    # semantic-release needs this
   issues: read
   pull-requests: read
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     env:
-      # Needed by semantic-release to publish a GitHub Release
+      # Used by semantic-release to publish
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      # Disable any accidental signing discovery in CI
+      # Avoid accidental code signing on CI
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      # Skip unnecessary browser downloads
+      # Save CI time
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      # Give Node more headroom during compile
+      NODE_OPTIONS: "--max_old_space_size=8192"
 
     steps:
-      # --- Git & Node toolchain ---
+      # ── Git & Node ──────────────────────────────────────────────────────────────
       - name: Checkout (full history for tags)
         uses: actions/checkout@v4
         with:
@@ -39,52 +51,60 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      # --- System packages for native node modules & Electron runtime ---
-      # Provides build-essential toolchain + headers for kerberos/gssapi and x11/keymap.
+      # ── Native toolchain & headers for node-gyp modules and Electron runtime ───
       - name: Install system libraries for native modules
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential python3 pkg-config libkrb5-dev libsecret-1-dev libxkbfile-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libnss3 libgtk-3-0 libatk-bridge2.0-0 libgbm-dev
+          sudo apt-get install -y --no-install-recommends \
+            build-essential python3 pkg-config \
+            libkrb5-dev libsecret-1-dev \
+            libxkbfile-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-dev \
+            libnss3 libasound2 libgtk-3-0 libatk-bridge2.0-0 libgbm-dev
 
-      # --- JS deps ---
+      # ── JS deps ────────────────────────────────────────────────────────────────
       - name: Install dependencies
         run: npm ci
 
       - name: Verify gulp is available
         run: npx --yes gulp --version
 
-      # --- Build (VS Code-style) ---
-      - name: Compile sources
+      # ── Build React UI bundles required by TS imports (react/out/**) ───────────
+      - name: Build Void React UI
         run: |
-          # VS Code/void build uses gulp tasks
-          npx --yes gulp compile
+          set -euo pipefail
+          npm run buildreact
+          # Sanity check: verify at least one built entry exists
+          test -e ./src/vs/workbench/contrib/void/browser/react/out/void-tooltip/index.js
+
+      # ── Compile & package ──────────────────────────────────────────────────────
+      - name: Compile sources
+        run: npx --yes gulp compile
 
       - name: Build VS Code-style Linux x64 bundle
-        run: |
-          # Produces .build/electron/linux-x64/** (or similar)
-          npx --yes gulp vscode-linux-x64
+        run: npx --yes gulp vscode-linux-x64
 
-      # Helpful when debugging CI
       - name: List built artifacts (debug)
         run: |
           echo "Tree under .build/"
           (ls -alh .build || true)
           (find .build -maxdepth 3 -type f | sort || true)
 
-      # --- Prepare release files for semantic-release@github assets ---
+      # ── Prepare files for the GitHub Release (semantic-release github assets) ─
       - name: Prepare release assets
         run: |
+          set -euo pipefail
           mkdir -p release
-          # Prefer prebuilt archives from gulp (zip/tar.gz)
+          # Prefer archives produced by gulp, if present
           if compgen -G ".build/**/*linux-x64*.zip" > /dev/null; then
             cp -v $(ls .build/**/*linux-x64*.zip) release/ || true
           fi
           if compgen -G ".build/**/*linux-x64*.tar.gz" > /dev/null; then
             cp -v $(ls .build/**/*linux-x64*.tar.gz) release/ || true
           fi
-          # Fallback: tar the linux-x64 folder if no archive exists
+          # Fallback: tar the linux-x64 folder
           if [ -z "$(ls -A release 2>/dev/null)" ]; then
             LINUX_DIR="$(find .build -type d -name '*linux-x64*' | head -n1 || true)"
             if [ -n "$LINUX_DIR" ]; then
@@ -92,11 +112,18 @@ jobs:
               tar -czf "release/$ARCHIVE" -C "$LINUX_DIR/.." "$(basename "$LINUX_DIR")"
             fi
           fi
-          echo "Release assets:"
-          ls -alh release || true
+          echo "Release assets:"; ls -alh release || true
 
-      # --- Publish Release via semantic-release ---
-      - name: Semantic Release
+      # Optional: keep a copy of artifacts for debugging CI runs
+      - name: Upload build artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-release
+          path: release/*
+
+      # ── Publish GitHub Release via semantic-release ────────────────────────────
+      - name: Semantic Release (GitHub)
         env:
           GIT_AUTHOR_NAME: "Nathan Jobrayan"
           GIT_AUTHOR_EMAIL: "nathanjobrayan@gmail.com"
